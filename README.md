@@ -41,6 +41,7 @@ pixels, always.
 | Advanced widget | |
 | --- | --- |
 | `feed` | what goes in the queue/history panel: `preview` (default; a JPEG of at most 1280 px, quality 85, nearly free), `full` (a lossless PNG with the workflow, like Preview Image; slower), `off`. It does not change what the node shows. |
+| `feed_right` | on by default. Turn it off to keep the right image out of the queue/history panel, so only the left one goes there. Does nothing without a `right` image or with `feed` off, and the viewer on the node still shows both. |
 
 Zoom, pan, mode and the split carry over when you run again, so you can see what changed in the
 same place. The mode is saved with the workflow; none of it is a widget, so changing it never

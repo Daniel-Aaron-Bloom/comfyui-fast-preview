@@ -75,6 +75,32 @@ class Output(NodeCase):
             with Image.open(path) as img:
                 self.assertEqual(img.size, (300, 200))
 
+    async def test_feed_right_off_keeps_the_right_image_out_of_the_feed(self):
+        right = helpers.split_image(300, 200, batch=2)
+        ui = (await self.run_node(helpers.split_image(300, 200, batch=2), right=right, feed_right=False))["ui"]
+        names = [im["filename"] for im in ui["images"]]
+        self.assertEqual([n.split("_")[-1][0] for n in names], ["l", "l"])
+        self.assertEqual(sorted(os.listdir(self.pkg.temp_dir)), sorted(names))    # nothing for the right was written
+        # ... and the viewer is not affected: both sides are still announced and pushed
+        info = json.loads(ui["fast_preview"][0])
+        self.assertEqual([s["count"] for s in info["sides"]], [2, 2])
+        imgs = [f for k, f in await self.until_end() if k == "img"]
+        self.assertEqual({(f["s"], f["i"]) for f in imgs}, {(0, 0), (0, 1), (1, 0), (1, 1)})
+
+    async def test_feed_right_is_on_by_default(self):
+        ui = (await self.run_node(helpers.split_image(), right=helpers.split_image()))["ui"]
+        self.assertEqual([im["filename"].split("_")[-1][0] for im in ui["images"]], ["l", "r"])
+
+    async def test_feed_right_off_applies_to_full_feed_too(self):
+        ui = (await self.run_node(helpers.split_image(), right=helpers.split_image(), feed="full", feed_right=False))["ui"]
+        self.assertEqual([im["filename"][-6:] for im in ui["images"]], ["l0.png"])
+
+    async def test_feed_right_does_nothing_without_a_right_image_or_with_feed_off(self):
+        ui = (await self.run_node(helpers.split_image(), feed_right=False))["ui"]
+        self.assertEqual(len(ui["images"]), 1)
+        ui = (await self.run_node(helpers.split_image(), right=helpers.split_image(), feed="off", feed_right=False))["ui"]
+        self.assertNotIn("images", ui)
+
     async def test_feed_off_writes_nothing(self):
         ui = (await self.run_node(helpers.split_image(), feed="off"))["ui"]
         self.assertNotIn("images", ui)
@@ -106,8 +132,11 @@ class Output(NodeCase):
     async def test_input_spec(self):
         spec = self.pkg.nodes.FastPreview.INPUT_TYPES()
         self.assertEqual(list(spec["required"]), ["left"])
-        self.assertEqual(list(spec["optional"]), ["right", "feed"])    # no size, no quality: nothing to tune
+        # no size, no quality: nothing to tune. New widgets go last: saved workflows store widget values by position
+        self.assertEqual(list(spec["optional"]), ["right", "feed", "feed_right"])
         self.assertTrue(spec["optional"]["feed"][1]["advanced"])
+        kind, opts = spec["optional"]["feed_right"]
+        self.assertEqual((kind, opts["default"], opts["advanced"]), ("BOOLEAN", True, True))
         self.assertTrue(self.pkg.nodes.FastPreview.OUTPUT_NODE)
 
 

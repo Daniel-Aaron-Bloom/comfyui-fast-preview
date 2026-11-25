@@ -90,13 +90,21 @@ class FastPreview:
                                "PNG with the workflow embedded, like Preview Image does (slower). "
                                "'off' writes nothing. The viewer on the node is not affected.",
                 }),
+                "feed_right": ("BOOLEAN", {
+                    "default": True,
+                    "advanced": True,
+                    "tooltip": "Whether the right image goes in the queue/history panel too. Turn it "
+                               "off to keep only the left one there. It makes no difference unless "
+                               "'right' is connected and 'feed' is not 'off'. The viewer on the node "
+                               "still shows both.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID", "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
-    def preview(self, left, right=None, feed="preview",
+    def preview(self, left, right=None, feed="preview", feed_right=True,
                 unique_id=None, prompt=None, extra_pnginfo=None):
         client_id = PromptServer.instance.client_id
         if client_id is None and feed == "off":
@@ -155,7 +163,8 @@ class FastPreview:
 
         # 3. the feed needs real files before the node returns; nothing else does
         if feed != "off":
-            ui["images"] = self._write_feed(token, feed, order, batches, entry, png_text, retained)
+            fed = order if feed_right else [(s, i) for s, i in order if s == 0]
+            ui["images"] = self._write_feed(token, feed, fed, batches, entry, png_text, retained)
 
         log.debug("fast preview %s: node returned after %s ms", token, elapsed_ms())
         return {"ui": ui}
