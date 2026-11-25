@@ -1,12 +1,12 @@
 """Image tensors in, encoded bytes out. No ComfyUI imports.
 
-The live path never touches the full-resolution pixels more than it must:
-the thumbnail comes from a strided slice of the float tensor, and the preview
-is an antialiased downscale of it done in torch, on whatever device the tensor
-already lives on, then converted to uint8 at the small size. A 4096x4096 image
-costs about 10 ms to preview this way instead of the half second a PNG encode
-takes. The full uint8 image is only produced later, in the background, for
-the lossless PNG that zooming and "Save Image" ask for.
+An image reaches the screen in two steps. The first, a thumbnail, comes from a
+strided slice of the float tensor and is encoded inline, so it is on screen
+before anything else has been computed. The second is the exact pixels as a
+PNG, made in the background from the uint8 copy of the full image.
+
+`make_preview` is a third, separate thing: a lossy, size-capped copy that is
+only written to disk for the queue/history panel (the node's `feed` option).
 """
 
 import io
@@ -18,8 +18,17 @@ import torch.nn.functional as F
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-THUMB_EDGE = 64
+THUMB_EDGE = 128
 THUMB_QUALITY = 60
+
+# The file written for the queue/history panel when `feed` is "preview".
+FEED_EDGE = 1280
+FEED_QUALITY = 85
+
+# Fastest JPEG encode: baseline scan, standard Huffman tables. Progressive is
+# ~6x slower and optimize ~2.7x at 4096 px. Pillow's defaults already are
+# these; they are spelled out so that stays true.
+_JPEG_FAST = {"progressive": False, "optimize": False}
 
 
 @dataclass(frozen=True)
@@ -87,7 +96,7 @@ def _encode_lossy(u8, quality):
         # JPEG has no alpha; WebP at its fastest setting does
         Image.fromarray(u8).save(buf, "WEBP", quality=quality, method=0)
         return Encoded(buf.getvalue(), "webp", w, h)
-    Image.fromarray(u8).save(buf, "JPEG", quality=quality)
+    Image.fromarray(u8).save(buf, "JPEG", quality=quality, **_JPEG_FAST)
     return Encoded(buf.getvalue(), "jpeg", w, h)
 
 
@@ -100,7 +109,7 @@ def make_thumb(x, edge=THUMB_EDGE, quality=THUMB_QUALITY):
     return _encode_lossy(_small_u8(x, w, h, k), quality)
 
 
-def make_preview(x, edge, quality):
+def make_preview(x, edge=FEED_EDGE, quality=FEED_QUALITY):
     """x: one image [H, W, C], any device. Lossy, at most `edge` on its long side."""
     H, W = x.shape[:2]
     w, h = fit(W, H, edge)

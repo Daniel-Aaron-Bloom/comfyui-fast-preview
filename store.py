@@ -1,9 +1,9 @@
 """What the server remembers about recent results.
 
 Each execution of the node becomes an `Entry`, keyed by a random token. It
-holds the small encoded frames (so a browser that reloads, or runs a cached
-prompt, can be sent the preview again) and, once converted, the full uint8
-pixels (so zooming and "Save Image" can get a lossless PNG without the node
+holds the thumbnails (so a browser that reloads, or runs a cached prompt, can
+be sent them again) and, once converted, the full uint8 pixels (so the browser
+can fetch the lossless PNG, and "Save Image" a download of it, without the node
 having written one). The whole thing is capped by bytes, oldest first.
 """
 
@@ -24,9 +24,8 @@ class Entry:
         self.node = node              # ComfyUI's id for the node (a string)
         self.sides = sides            # [{"count", "w", "h", "c"}, ...]
         self.png_text = png_text      # callable -> {chunk: text} | None
-        self.meta = meta or {}        # {"wf": workflow id, "edge": preview size}
+        self.meta = meta or {}        # {"wf": workflow id}
         self.thumbs = {}              # (side, idx) -> Encoded
-        self.previews = {}            # (side, idx) -> Encoded
         self.nbytes = 0
         self._pending = {}            # (side, idx) -> float tensor awaiting uint8
         self._u8 = {}                 # (side, idx) -> np.ndarray [H, W, C]
@@ -44,10 +43,9 @@ class Entry:
         with self._lock:
             self._pending[(side, idx)] = tensor
 
-    def put(self, kind, side, idx, enc):
-        table = self.thumbs if kind == "thumb" else self.previews
-        if (side, idx) not in table:
-            table[(side, idx)] = enc
+    def put_thumb(self, side, idx, enc):
+        if (side, idx) not in self.thumbs:
+            self.thumbs[(side, idx)] = enc
             self._grew(len(enc.data))
 
     def has_u8(self, side, idx):

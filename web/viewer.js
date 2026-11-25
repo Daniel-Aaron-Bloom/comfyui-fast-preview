@@ -1,10 +1,10 @@
 // The picture on the node: one canvas, one image or two, nothing else.
 //
-// What it draws is whatever level of detail has arrived (see net.js), so the
-// first paint is a 64 px thumbnail stretched over the frame, replaced by the
-// preview when it lands, replaced by the exact pixels only if you zoom in
-// past what the preview holds (or compare in "diff", where JPEG noise would
-// show as difference).
+// What it draws is whatever level of detail has arrived (see net.js): the
+// first paint is a 128 px thumbnail stretched over the frame, replaced by the
+// exact pixels (a lossless PNG) the moment they have been fetched and decoded.
+// The exact pixels are asked for as soon as a result is shown, not when you
+// zoom or resize: there is nothing in between.
 
 import { LOD, SIDE_NAMES } from "./protocol.js";
 
@@ -56,7 +56,7 @@ function el(tag, cls, text) {
 export class Viewer {
     /**
      * host: {
-     *   requestFull(result, side, idx)   fetch the exact pixels
+     *   requestFull(result, side, idx)   fetch the exact pixels (a no-op if already held or on the way)
      *   save(result, side, idx)          download the exact pixels of one image
      *   changed()                        view settings changed (for saving)
      *   forwardWheel(event)              scrolling that is not ours: hand it to the graph
@@ -79,7 +79,6 @@ export class Viewer {
         this.showStats = false;
         this.drag = null;
         this.raf = 0;
-        this.fullTimer = 0;
         this.size = { w: 0, h: 0, dpr: 1 };
 
         const root = (this.root = el("div", "fp-root"));
@@ -162,14 +161,16 @@ export class Viewer {
     release() {
         this.unsubscribe?.();
         this.unsubscribe = null;
-        if (this.result) this.result.refs = Math.max(0, this.result.refs - 1);
+        if (this.result) {
+            this.result.refs = Math.max(0, this.result.refs - 1);
+            if (this.result.refs === 0) this.result.keepFull([]);    // exact pixels are big: nobody is looking, let them go
+        }
         this.result = null;
     }
 
     destroy() {
         this.release();
         cancelAnimationFrame(this.raf);
-        clearTimeout(this.fullTimer);
         this.resizer.disconnect();
         this.root.remove();
     }
@@ -228,7 +229,9 @@ export class Viewer {
     onResultChanged() {
         const r = this.result;
         if (!r) return;
-        r.keepFull(r.sides.map((s, side) => [side, Math.min(this.idx, s.count - 1)]));
+        const shown = r.sides.map((s, side) => [side, Math.min(this.idx, s.count - 1)]);
+        r.keepFull(shown);
+        for (const [side, idx] of shown) this.host.requestFull?.(r, side, idx);
         this.syncUi();
         this.requestDraw();
     }
@@ -451,7 +454,6 @@ export class Viewer {
             this.label(ctx, LABELS[0], Math.max(pad, 0), pad + 24 * dpr);
             this.label(ctx, LABELS[1], W - pad, pad + 24 * dpr, "right");
         }
-        this.wantFull(A, B);
     }
 
     /** |A - B|, brightened by repeated additive self-blits (x2 each), so it needs no ctx.filter. */
@@ -475,29 +477,6 @@ export class Viewer {
         c.globalCompositeOperation = "source-over";
         this.ctx.drawImage(s, 0, 0);
         this.label(this.ctx, `|${LABELS[0]} − ${LABELS[1]}| ×${this.gain}`, 6 * this.size.dpr, 30 * this.size.dpr);
-    }
-
-    /** Ask for the exact pixels when the preview is being stretched past what it holds. */
-    wantFull(A, B) {
-        const r = this.result;
-        const diff = this.mode === "diff" && B;
-        const need = [A, B].filter(Boolean).filter((img) => {
-            if (img.lod === LOD.FULL || img.lod < LOD.PREVIEW) return false;    // already exact, or not even a preview yet
-            const src = r.sides[img.side].w;
-            const have = img.bitmap.width / src;                                // fraction of the pixels the preview kept
-            const showing = img.rect.w / src;                                   // device px per source px on screen
-            // A downscaled preview is stretched once you zoom past what it kept. One that kept every
-            // pixel only differs by compression noise: that is left alone while just viewing (a small
-            // image on a sharp screen is shown at 2x without a second request), but once you have
-            // zoomed in yourself, "actual pixels" should mean the actual pixels.
-            const threshold = Math.min(have < 1 ? have * 1.25 : 2, this.zoom > 1 ? 0.999 : Infinity);
-            return diff || showing > threshold;
-        });
-        if (!need.length) return;
-        clearTimeout(this.fullTimer);
-        this.fullTimer = setTimeout(() => {
-            for (const img of need) this.host.requestFull?.(r, img.side, img.idx);
-        }, 100);    // let a wheel gesture settle before asking
     }
 
     // ---- chrome ----------------------------------------------------------
@@ -541,14 +520,18 @@ export class Viewer {
         const part = (side) => {
             const s = r.sides[side];
             const slot = r.slot(side, Math.min(this.idx, s.count - 1));
-            const tag = slot.bitmaps[LOD.FULL] ? "exact" : slot.fullState === "loading" ? "loading exact…" : slot.bitmaps[LOD.PREVIEW] ? "preview" : slot.bitmaps[LOD.THUMB] ? "thumbnail" : "waiting";
+            const tag = slot.bitmaps[LOD.FULL]
+                ? "exact"
+                : slot.bitmaps[LOD.THUMB]
+                  ? slot.fullState === "loading" ? "thumbnail, loading exact…" : "thumbnail"
+                  : "waiting";
             return `${this.comparing ? LABELS[side] + " " : ""}${s.w}×${s.h} ${tag}`;
         };
         let text = r.sides.map((_, i) => part(i)).join("  ·  ");
         if (this.showStats) {
             const t = r.t;
             const f = (v) => (v === null ? "–" : `${Math.round(v)} ms`);
-            text += `  ·  thumb ${f(t.thumb)} · preview ${f(t.preview)} after the node started${t.serverMs !== null ? ` (server ${Math.round(t.serverMs)} ms)` : ""}`;
+            text += `  ·  thumb ${f(t.thumb)} · exact ${f(t.full)} after the node started${t.serverMs !== null ? ` (the server had sent the thumbnails after ${Math.round(t.serverMs)} ms)` : ""}`;
         }
         return text;
     }

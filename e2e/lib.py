@@ -46,6 +46,13 @@ def api_bytes(path):
     with urllib.request.urlopen(URL + path, timeout=60) as r:
         return r.read()
 
+# `.fp-info` says, per image, "exact", "thumbnail", "thumbnail, loading exact…" or "waiting".
+WAIT_JS = {
+    "exact": "() => { const t = document.querySelector('.fp-info')?.textContent || ''; return /exact/.test(t) && !/thumbnail|waiting/.test(t); }",
+    "any": "() => /thumbnail|exact/.test(document.querySelector('.fp-info')?.textContent || '')",
+}
+
+
 class Session:
     def __init__(self, p, dsf=2, viewport=(1500, 1000), vue=False):
         self.b = p.chromium.launch(headless=True)
@@ -88,10 +95,13 @@ class Session:
         ids = self.page.evaluate(BUILD, {"size": size, "invert": invert, "jitter": jitter})
         time.sleep(0.8)
         return ids
-    def run_and_wait(self, timeout=60000):
+    def run_and_wait(self, timeout=60000, until="exact"):
+        """Queue the prompt and wait for the viewer: `until="exact"` for the exact pixels of every
+        image on screen, "any" for the first pixels (a thumbnail), which is all that arrives if the
+        endpoint for the exact pixels is down."""
         pg = self.page
         pg.evaluate("() => { window.__t0 = performance.now(); window.app.queuePrompt(0) }")
-        pg.wait_for_function("() => /preview/.test(document.querySelector('.fp-info')?.textContent || '')", timeout=timeout)
+        pg.wait_for_function(WAIT_JS[until], timeout=timeout)
         time.sleep(0.6)
     def viewer_box(self):
         return self.page.locator(".fp-canvas").first.bounding_box()

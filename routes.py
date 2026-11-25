@@ -114,14 +114,16 @@ async def image(request):
     if side >= len(entry.sides) or not 0 <= idx < entry.sides[side]["count"]:
         return web.Response(status=404, text="no such image")
 
-    if lod in (wire.LOD_THUMB, wire.LOD_PREVIEW):
-        enc = (entry.thumbs if lod == wire.LOD_THUMB else entry.previews).get((side, idx))
+    if lod == wire.LOD_THUMB:
+        enc = entry.thumbs.get((side, idx))
         if enc is None:
             return web.Response(status=404, text="not encoded yet")
         return web.Response(body=enc.data, content_type=wire.CODEC_MIME[enc.codec], headers=IMMUTABLE)
 
+    if lod != wire.LOD_FULL:
+        return web.Response(status=400, text="bad lod")
     download = q.get("dl") == "1"
-    # Zooming wants it now, and a loopback link does not care about 13 MB:
+    # The viewer wants it now, and a loopback link does not care about 13 MB:
     # store the pixels (level 0). A download is a one-off and gets kept: squeeze it.
     level = 3 if download else (0 if _is_loopback(request) else 1)
     try:

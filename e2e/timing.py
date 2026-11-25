@@ -34,8 +34,9 @@ MEASURE = """
     const now = performance.now();
     if (isFast) {
       const txt = document.querySelector(".fp-info")?.textContent || "";
-      if (t.first === null && /thumbnail|preview/.test(txt)) t.first = now;
-      if (t.final === null && /preview/.test(txt)) t.final = now;
+      const exact = /exact/.test(txt) && !/thumbnail|waiting/.test(txt);    // every image on screen is exact
+      if (t.first === null && (exact || /thumbnail/.test(txt))) t.first = now;
+      if (t.final === null && exact) t.final = now;
     } else {
       const im = prev.imgs && prev.imgs[0];
       if (im && im.complete && im.naturalWidth > 0) { if (t.first === null) t.first = now; if (t.final === null) t.final = now; }

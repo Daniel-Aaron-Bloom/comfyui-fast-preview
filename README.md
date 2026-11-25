@@ -35,11 +35,12 @@ Plain scrolling still zooms and pans the graph, even over the node.
 a download from your browser: nothing is written to the output or temp folders, and nothing
 reaches the queue panel.
 
-| Widget | |
+The node has no size or quality setting: the image is shown as a thumbnail, then as the exact
+pixels, always.
+
+| Advanced widget | |
 | --- | --- |
-| `max_edge` | longest side of the live preview, default 1280 |
-| `quality` | JPEG quality of the live preview, default 85 |
-| `feed` | what goes in the queue/history panel: `preview` (default; the small preview, nearly free), `full` (a lossless PNG with the workflow, like Preview Image; slower), `off` |
+| `feed` | what goes in the queue/history panel: `preview` (default; a JPEG of at most 1280 px, quality 85, nearly free), `full` (a lossless PNG with the workflow, like Preview Image; slower), `off`. It does not change what the node shows. |
 
 Zoom, pan, mode and the split carry over when you run again, so you can see what changed in the
 same place. The mode is saved with the workflow; none of it is a widget, so changing it never
@@ -76,42 +77,65 @@ fetches and decodes the whole file. This node stops doing most of that.
   sequential send loop with deflate on, so a slow browser stalls everyone and JPEGs get compressed
   for nothing. This one is uncompressed, with a queue per browser, and a queue is where stale
   frames get dropped: starting a new result discards whatever was still unsent for the old one.
-- **Levels of detail, arriving in order.** A 64 px thumbnail from a strided slice of the float tensor
-  (about 0.1 ms, so it is on screen before the preview is even encoded), then a screen-sized JPEG.
-  The exact pixels are fetched only when you zoom past what the preview holds, compare in *Diff*, or
-  save.
-- **The downscale happens in torch, on the tensor's own device**, on the float data, so the full-size
-  image is never converted to 8-bit or encoded on the way to the screen. 4–6× faster than PIL at 2–4K.
-- **The node returns early.** Encoding happens in a thread pool (PIL and torch release the GIL) and
-  each frame is sent the instant it finishes. Nothing is written to disk unless `feed` asks for it.
-- **The full PNG is made lazily**, on first request, once, and cached.
+- **Two levels, arriving in order.** A 128 px JPEG thumbnail, pushed over the socket the moment the
+  node runs, then the exact pixels as a lossless PNG, which the browser fetches as soon as it knows
+  about the result. There is nothing in between and nothing to tune: the thumbnail is the fast first
+  pixel, the PNG is the image.
+- **The thumbnail is cheap to the point of being free.** It comes from a strided slice of the float
+  tensor, downscaled in torch on the tensor's own device, so it never waits for the full-size image
+  to be converted to 8-bit (under half a millisecond at any size). It is encoded as a baseline JPEG, with no progressive
+  scan and no Huffman optimisation, which is what makes JPEG encodes fast (progressive is ~6× slower
+  and optimising ~2.7× at 4096 px).
+- **The node returns early.** The conversion to 8-bit and the PNG encode happen in a thread pool (PIL
+  and torch release the GIL), after the thumbnail is already on its way. Nothing is written to disk
+  unless `feed` asks for it.
+- **Only what is on screen stays in memory.** The PNG is encoded when asked for, once, and cached on
+  the server. In the browser, only the image you are looking at holds its decoded exact pixels
+  (64 MB for a 4K image); step to another image in a batch, or run again, and they are let go, and a
+  fetch for them that is still on its way is cancelled.
 - **Frames beat `executed`.** The first frames arrive about 10 ms before ComfyUI's own `executed`
   message, so the viewer already has the image when the node reports done.
 - **Cached and reloaded runs** are answered from a replay (the server keeps the last results in
-  memory) rather than a re-encode.
+  memory): the thumbnails are pushed again and the browser fetches the exact pixels again, rather
+  than anything being re-encoded.
 
 ### Numbers
 
-Time from the node starting to execute until pixels are on screen, in the browser, median of 5
-fresh executions per row, over loopback (Apple M4 Max, CPU tensors, ComfyUI 0.46.0, frontend
-1.59.10, headless Chromium). Reproduce with `e2e/timing.py`.
+**First pixels.** Time from the node starting to execute until pixels are on screen, in the browser,
+median of 5 fresh executions per row, over loopback (Apple M4 Max, CPU tensors, ComfyUI 0.46.0,
+frontend 1.59.10, headless Chromium). Reproduce with `e2e/timing.py`.
 
-| image | stock *Preview Image* | this node, first pixels | this node, preview |
-| --- | --- | --- | --- |
-| 1024² | ~40 ms | 5–15 ms | 9–16 ms |
-| 2048² | ~75 ms | 5–12 ms | 19–32 ms |
-| 4096² | 210–270 ms | 3–9 ms | 23–38 ms |
+| image | stock *Preview Image* | this node, first pixels |
+| --- | --- | --- |
+| 1024² | ~40 ms | 5–15 ms |
+| 2048² | ~75 ms | 5–12 ms |
+| 4096² | 210–270 ms | 3–9 ms |
 
-The stock figure grows with image size (PNG encode, a 50 MB transfer at 4K, decode); this node's
-does not, because what is sent is a fixed ~150 KB frame. A comparison costs stock two of those; it
-costs this node about the same as one image. Loopback understates the gap on a remote machine,
-where the transfer dominates, but that has not been measured.
+The first pixels do not depend on the image size, because what is sent first is a fixed-size thumbnail
+(a few KB). Stock's figure grows with it (PNG encode, a 50 MB transfer at 4K, decode).
+
+**The exact pixels** now take the same road as stock's: a PNG, transferred and decoded, so they cost
+about what it does, and grow with the image. Measured on the server only (the node runs, then the
+PNG is requested over HTTP the moment the thumbnails are sent, over loopback, level-0 PNG, same
+machine), the time until the last byte is in hand:
+
+| image | PNG size | after the node started |
+| --- | --- | --- |
+| 1024² | 3 MB | 13–19 ms |
+| 2048² | 13 MB | 51–64 ms |
+| 4096² | 50 MB | 205–215 ms |
+
+The browser's decode comes on top of that, and `e2e/timing.py` reports the whole path as "final
+image"; those browser-side numbers have not been re-taken since the preview level was removed.
+Loopback understates the cost on a remote machine, where the transfer dominates (a request from
+somewhere that is not loopback gets a compressed level-1 PNG, which is smaller but slower to make).
+A comparison fetches two PNGs.
 
 ## The queue / history panel
 
-The panel only recognises files listed under `images`, so with `feed = preview` the node writes the
-small preview there as a temp file, and the previews show up in the Assets panel and the job's
-outputs like any other. Clicking one in the panel opens that preview, not the full PNG; use
+The panel only recognises files listed under `images`, so with `feed = preview` the node writes a
+small JPEG there as a temp file, and the previews show up in the Assets panel and the job's
+outputs like any other. Clicking one in the panel opens that small JPEG, not the full PNG; use
 `feed = full` if you want the panel to hold the lossless file. The node also returns a
 `fast_preview` entry as a plain string, which the panel ignores (it skips non-file items), and which
 tells the page which result the node produced.
@@ -120,7 +144,7 @@ tells the page which result the node produced.
 
 | Environment variable | Default | |
 | --- | --- | --- |
-| `FAST_PREVIEW_CACHE_MB` | 512 | how much the server remembers (previews and full pixels), oldest results first |
+| `FAST_PREVIEW_CACHE_MB` | 512 | how much the server remembers (thumbnails and full pixels), oldest results first |
 | `FAST_PREVIEW_PNG_CACHE_MB` | 192 | encoded full-size PNGs kept for repeat requests |
 
 ## Limits worth knowing
@@ -143,7 +167,8 @@ tells the page which result the node produced.
 python -m unittest discover -s tests
 ```
 
-`tests/test_filename.py` runs the file-name templates through `node`. `tests/helpers.py` imports the repo as a package against stand-ins for `server` and
+`tests/test_filename.py` runs the file-name templates through `node`, and `tests/test_net.py` the viewer's
+bookkeeping (`web/net.js`: what a result holds, and what it fetches and lets go of). `tests/helpers.py` imports the repo as a package against stand-ins for `server` and
 `folder_paths`, so the node, the routes (over a real websocket) and the pipeline are tested without
 ComfyUI. `tests/test_protocol_parity.py` checks `web/protocol.js` reads exactly what `wire.py`
 writes (needs `node`).

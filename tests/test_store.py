@@ -17,7 +17,7 @@ Encoded = pkg.pipeline.Encoded
 
 def entry(token, kb=10, side_count=1):
     e = Entry(token, "1", [{"count": side_count, "w": 8, "h": 8, "c": 3}])
-    e.put("preview", 0, 0, Encoded(b"x" * (kb * 1024), "jpeg", 8, 8))
+    e.put_thumb(0, 0, Encoded(b"x" * (kb * 1024), "jpeg", 8, 8))
     return e
 
 
@@ -46,7 +46,7 @@ class Eviction(unittest.TestCase):
         s.add(entry("a", kb=10))
         late = entry("b", kb=10)
         s.add(late)
-        late.put("thumb", 0, 0, Encoded(b"y" * 30 * 1024, "jpeg", 8, 8))   # now 50 KB total
+        late.put_thumb(0, 1, Encoded(b"y" * 30 * 1024, "jpeg", 8, 8))   # now 50 KB total
         self.assertIsNone(s.get("a"))
         self.assertIsNotNone(s.get("b"))
 

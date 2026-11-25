@@ -2,7 +2,7 @@
 
 export const VERSION = 1;
 export const KIND_IMAGE = 1;
-export const LOD = { THUMB: 0, PREVIEW: 1, FULL: 2 };
+export const LOD = { THUMB: 0, FULL: 1 };
 export const SIDE_NAMES = ["left", "right"];    // side 0 and side 1: which half of the slider each is drawn on
 export const MIME = { jpeg: "image/jpeg", webp: "image/webp", png: "image/png" };
 

@@ -20,7 +20,9 @@ with sync_playwright() as p:
     pg = s.page
     t_run = time.time()
     s.run_and_wait()
-    check("both sides arrive as previews", "Left 2048×2048 preview" in s.info() and "Right 2048×2048 preview" in s.info(), s.info())
+    check("both sides arrive as the exact pixels", "Left 2048×2048 exact" in s.info() and "Right 2048×2048 exact" in s.info(), s.info())
+    full = [u for u in s.fp_requests(t_run) if "lod=1" in u]
+    check("the exact pixels were fetched on their own: once for left, once for right", len(full) == 2 and any("s=l" in u for u in full) and any("s=r" in u for u in full), full)
 
     box = s.viewer_box()
     cx, cy, w, h = box["x"], box["y"], box["width"], box["height"]
@@ -48,17 +50,14 @@ with sync_playwright() as p:
     a_again = s.shot("e2e_flipA2")[int(H * 0.8), int(W * 0.5)]
     check("flip: second click shows the left again", np.abs(a_again - a_flip).max() < 6, (a_flip, a_again))
 
-    # ---- diff pulls the exact pixels for both sides ----
+    # ---- diff works on the exact pixels already held: nothing more to fetch ----
     t_diff = time.time()
-    pg.click("text=Diff"); time.sleep(0.2)
-    pg.wait_for_function("() => /Left 2048×2048 exact.*Right 2048×2048 exact/.test(document.querySelector('.fp-info')?.textContent || '')", timeout=20000)
-    full = [u for u in s.fp_requests(t_diff) if "lod=2" in u]
-    check("diff: fetched lod=2 for left and right once each", len(full) == 2 and any("s=l" in u for u in full) and any("s=r" in u for u in full), full)
-    time.sleep(0.4)
+    pg.click("text=Diff"); time.sleep(0.6)
+    check("diff: fetched nothing more", not [u for u in s.fp_requests(t_diff) if "lod=" in u], s.fp_requests(t_diff))
     d = s.shot("e2e_diff")
     check("diff: left vs inverted-left is bright", d[int(H*0.3):int(H*0.7), int(W*0.3):int(W*0.7)].mean() > 40, d.mean())
 
-    # ---- zoom past the preview triggers exact pixels; plain wheel does not zoom the image ----
+    # ---- ctrl+wheel zooms the image; plain wheel does not ----
     pg.click("text=Slide"); time.sleep(0.2)
     scale0 = pg.evaluate("() => window.app.canvas.ds.scale")
     pg.mouse.move(cx + w * 0.5, cy + h * 0.5)

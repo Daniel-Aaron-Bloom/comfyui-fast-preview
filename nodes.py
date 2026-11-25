@@ -69,10 +69,9 @@ class FastPreview:
     RETURN_TYPES = ()
     DESCRIPTION = (
         "Shows images the moment they exist, and compares two of them. The "
-        "image reaches the browser over a binary websocket as a tiny "
-        "thumbnail first, then a screen-sized preview; the full lossless "
-        "pixels are only fetched when you zoom in or save. Connect one image "
-        "to preview it, two to compare."
+        "image reaches the browser as a tiny thumbnail over a binary websocket "
+        "first, then as the full lossless PNG. Connect one image to preview "
+        "it, two to compare."
     )
 
     @classmethod
@@ -83,21 +82,13 @@ class FastPreview:
             },
             "optional": {
                 "right": ("IMAGE", {"tooltip": "A second image to compare against, drawn on the right of the slider. Leave empty to just preview."}),
-                "max_edge": ("INT", {
-                    "default": 1280, "min": 256, "max": 4096, "step": 64,
-                    "tooltip": "Longest side of the live preview in pixels. Bigger is sharper "
-                               "and slower to send; zooming in always fetches the exact pixels.",
-                }),
-                "quality": ("INT", {
-                    "default": 85, "min": 30, "max": 100, "step": 1,
-                    "tooltip": "JPEG quality of the live preview.",
-                }),
                 "feed": (FEED_CHOICES, {
                     "default": "preview",
-                    "tooltip": "What goes in the queue/history panel. 'preview' writes the small "
-                               "preview, which costs next to nothing. 'full' writes a lossless "
+                    "advanced": True,
+                    "tooltip": "What goes in the queue/history panel. 'preview' writes a small "
+                               "JPEG, which costs next to nothing. 'full' writes a lossless "
                                "PNG with the workflow embedded, like Preview Image does (slower). "
-                               "'off' writes nothing.",
+                               "'off' writes nothing. The viewer on the node is not affected.",
                 }),
             },
             "hidden": {
@@ -105,7 +96,7 @@ class FastPreview:
             },
         }
 
-    def preview(self, left, right=None, max_edge=1280, quality=85, feed="preview",
+    def preview(self, left, right=None, feed="preview",
                 unique_id=None, prompt=None, extra_pnginfo=None):
         client_id = PromptServer.instance.client_id
         if client_id is None and feed == "off":
@@ -126,7 +117,7 @@ class FastPreview:
         node_id = None if unique_id is None else str(unique_id)
         png_text = _PngText(prompt, extra_pnginfo)
         entry = Entry(token, node_id, sides, png_text=png_text,
-                      meta={"wf": _workflow_id(extra_pnginfo), "edge": max_edge})
+                      meta={"wf": _workflow_id(extra_pnginfo)})
         retained = client_id is not None    # only a browser can ask for the pixels again
         live = retained and hub.has_client(client_id)
         if retained:
@@ -149,58 +140,30 @@ class FastPreview:
             except Exception:
                 log.warning("fast preview: thumbnail failed", exc_info=True)
                 continue
-            entry.put(session.THUMB, s, i, enc)
-            publish(*session.image(entry, session.THUMB, s, i, enc))
+            entry.put_thumb(s, i, enc)
+            publish(*session.thumb(entry, s, i, enc))
+        publish(("end", token), session.end(entry, ms=elapsed_ms()))
 
-        # 2. screen-sized previews, in parallel, each sent the instant it is done
-        remaining = [len(order)]
-        gate = threading.Lock()
-
-        def finished():
-            publish(("end", token), session.end(entry, ms=elapsed_ms()))
-            if retained:
-                pool.submit(self._remember, entry, png_text)
-
-        def encode(s, i):
-            with torch.inference_mode():
-                return pipeline.make_preview(batches[s][i], max_edge, quality)
-
-        def landed(s, i):
-            def callback(fut):
-                try:
-                    enc = fut.result()
-                    entry.put(session.PREVIEW, s, i, enc)
-                    publish(*session.image(entry, session.PREVIEW, s, i, enc))
-                except Exception:
-                    log.warning("fast preview: preview failed", exc_info=True)
-                with gate:
-                    remaining[0] -= 1
-                    last = remaining[0] == 0
-                if last:
-                    finished()
-            return callback
-
-        futures = {}
-        for s, i in order:
-            fut = pool.submit(encode, s, i)
-            futures[(s, i)] = fut
-            fut.add_done_callback(landed(s, i))
+        # 2. the exact pixels are what the browser asks for next (over HTTP, as
+        #    soon as it has the `begin`): get them to uint8 now, in the background
+        if retained:
+            pool.submit(self._remember, entry, png_text)
 
         ui = {"fast_preview": [json.dumps(
-            {"v": 1, "t": token, "n": node_id, "sides": sides, "edge": max_edge, "feed": feed},
+            {"v": 1, "t": token, "n": node_id, "sides": sides, "feed": feed},
             separators=(",", ":"))]}
 
         # 3. the feed needs real files before the node returns; nothing else does
         if feed != "off":
-            ui["images"] = self._write_feed(token, feed, order, futures, batches, entry, png_text, retained)
+            ui["images"] = self._write_feed(token, feed, order, batches, entry, png_text, retained)
 
         log.debug("fast preview %s: node returned after %s ms", token, elapsed_ms())
         return {"ui": ui}
 
     @staticmethod
     def _remember(entry, png_text):
-        """Background, after the previews are out: keep the exact pixels (so
-        zoom and Save Image can get a lossless PNG) and the workflow text."""
+        """Background: keep the exact pixels (so the browser can get a lossless
+        PNG for the viewer, and Save Image can download one) and the workflow text."""
         try:
             text = png_text()
             if text:
@@ -210,7 +173,7 @@ class FastPreview:
             log.warning("fast preview: could not retain full-resolution pixels", exc_info=True)
 
     @staticmethod
-    def _write_feed(token, feed, order, futures, batches, entry, png_text, retained):
+    def _write_feed(token, feed, order, batches, entry, png_text, retained):
         out_dir = folder_paths.get_temp_directory()
         os.makedirs(out_dir, exist_ok=True)
 
@@ -222,22 +185,18 @@ class FastPreview:
                 data = pipeline.encode_png(arr, level=1, text=png_text())
             return data, "png"
 
-        def get_preview(s, i):
-            enc = futures[(s, i)].result()    # re-raises if the encode failed
+        def write_preview(s, i):
+            with torch.inference_mode():
+                enc = pipeline.make_preview(batches[s][i])
             return enc.data, wire.CODEC_EXT[enc.codec]
 
-        job = write_png if feed == "full" else get_preview
-        if feed == "full":
-            produced = {k: pool.submit(job, *k) for k in order}
-            concurrent.futures.wait(produced.values())
-            get = lambda k: produced[k].result()
-        else:
-            concurrent.futures.wait(futures.values())
-            get = lambda k: job(*k)
+        job = write_png if feed == "full" else write_preview
+        produced = {k: pool.submit(job, *k) for k in order}
+        concurrent.futures.wait(produced.values())
 
         images = []
         for s, i in sorted(order):    # all of left, then all of right: `order` interleaves them
-            data, ext = get((s, i))
+            data, ext = produced[(s, i)].result()    # re-raises if the encode failed
             name = "fastpreview_%s_%s%d.%s" % (token, "lr"[s], i, ext)
             with open(os.path.join(out_dir, name), "wb") as f:
                 f.write(data)

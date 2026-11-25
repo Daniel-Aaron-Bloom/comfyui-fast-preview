@@ -68,8 +68,8 @@ class Pixels(unittest.TestCase):
 class Encodes(unittest.TestCase):
     def test_thumb_is_small_and_keeps_aspect(self):
         enc = pipeline.make_thumb(helpers.split_image(2048, 1024)[0])
-        self.assertEqual((enc.codec, enc.w, enc.h), ("jpeg", 64, 32))
-        self.assertEqual(decode(enc).size, (64, 32))
+        self.assertEqual((enc.codec, enc.w, enc.h), ("jpeg", 128, 64))
+        self.assertEqual(decode(enc).size, (128, 64))
         self.assertLess(len(enc.data), 2000)
 
     def test_thumb_of_a_tiny_image_is_not_upscaled(self):

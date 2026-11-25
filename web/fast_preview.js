@@ -109,7 +109,7 @@ async function recover(state, result, images, announced) {
         if (result.best(0, 0)) return;
     } else {
         try {
-            await Promise.all(result.sides.flatMap((s, side) => Array.from({ length: s.count }, (_, i) => result.fetchPreview(api, side, i))));
+            await Promise.all(result.sides.flatMap((s, side) => Array.from({ length: s.count }, (_, i) => result.fetchThumb(api, side, i))));
         } catch {
             /* fall through to the feed */
         }

@@ -27,9 +27,8 @@ _HEAD = struct.Struct("<2sBBI")
 HEAD_SIZE = _HEAD.size
 
 # Levels of detail, in the order they arrive and in order of quality.
-LOD_THUMB = 0     # ~64 px: the first thing on screen, tiny enough to be instant
-LOD_PREVIEW = 1   # screen-sized, lossy: what is looked at
-LOD_FULL = 2      # exact pixels, lossless: fetched only when zoomed or saved
+LOD_THUMB = 0     # ~128 px: pushed over the socket, the first thing on screen
+LOD_FULL = 1      # exact pixels, lossless PNG: fetched over HTTP as soon as a result is shown
 
 CODEC_MIME = {"jpeg": "image/jpeg", "webp": "image/webp", "png": "image/png"}
 CODEC_EXT = {"jpeg": "jpg", "webp": "webp", "png": "png"}

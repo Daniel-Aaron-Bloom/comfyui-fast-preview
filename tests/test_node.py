@@ -106,7 +106,8 @@ class Output(NodeCase):
     async def test_input_spec(self):
         spec = self.pkg.nodes.FastPreview.INPUT_TYPES()
         self.assertEqual(list(spec["required"]), ["left"])
-        self.assertEqual(list(spec["optional"]), ["right", "max_edge", "quality", "feed"])
+        self.assertEqual(list(spec["optional"]), ["right", "feed"])    # no size, no quality: nothing to tune
+        self.assertTrue(spec["optional"]["feed"][1]["advanced"])
         self.assertTrue(self.pkg.nodes.FastPreview.OUTPUT_NODE)
 
 
@@ -114,27 +115,24 @@ class Live(NodeCase):
     async def test_frames_come_in_the_promised_order(self):
         await self.run_node(helpers.split_image(2000, 1000), right=helpers.split_image(2000, 1000))
         frames = await self.until_end()
-        kinds = [(k, f.get("op") or ("thumb" if f["l"] == 0 else "preview") + "-" + "lr"[f["s"]]) for k, f in frames]
-        self.assertEqual(kinds[0], ("text", "begin"))
-        self.assertEqual(kinds[1:3], [("img", "thumb-l"), ("img", "thumb-r")])    # thumbs before any preview
-        self.assertEqual(sorted(k[1] for k in kinds[3:5]), ["preview-l", "preview-r"])
-        self.assertEqual(kinds[-1], ("text", "end"))
+        kinds = [(k, f.get("op") or ("thumb" if f["l"] == 0 else "full") + "-" + "lr"[f["s"]]) for k, f in frames]
+        self.assertEqual(kinds, [("text", "begin"), ("img", "thumb-l"), ("img", "thumb-r"), ("text", "end")])
 
     async def test_begin_describes_the_result(self):
         await self.run_node(helpers.split_image(300, 200), right=helpers.split_image(600, 400, batch=3),
-                            max_edge=256, extra_pnginfo={"workflow": {"id": "wf-9"}})
+                            extra_pnginfo={"workflow": {"id": "wf-9"}})
         begin = (await self.until_end())[0][1]
-        self.assertEqual((begin["op"], begin["n"], begin["wf"], begin["edge"], begin["replay"]), ("begin", "12", "wf-9", 256, False))
+        self.assertEqual((begin["op"], begin["n"], begin["wf"], begin["replay"]), ("begin", "12", "wf-9", False))
         self.assertEqual([(s["count"], s["w"], s["h"]) for s in begin["sides"]], [(1, 300, 200), (3, 600, 400)])
 
     async def test_every_image_frame_decodes_to_what_it_claims(self):
-        await self.run_node(helpers.split_image(1500, 1000), right=helpers.split_image(1500, 1000, batch=2), max_edge=512)
+        await self.run_node(helpers.split_image(1500, 1000), right=helpers.split_image(1500, 1000, batch=2))
         imgs = [f for k, f in await self.until_end() if k == "img"]
-        self.assertEqual(len(imgs), 3 * 2)    # (A: 1 + B: 2) thumbs and previews
+        self.assertEqual(len(imgs), 1 + 2)    # one thumbnail each for A: 1 and B: 2; the exact pixels come over HTTP
         for f in imgs:
             self.assertEqual(Image.open(io.BytesIO(f["payload"])).size, (f["w"], f["h"]))
-            self.assertEqual(f["c"], "jpeg")
-            self.assertLessEqual(max(f["w"], f["h"]), 512 if f["l"] == 1 else 64)
+            self.assertEqual((f["c"], f["l"]), ("jpeg", 0))
+            self.assertLessEqual(max(f["w"], f["h"]), 128)
         self.assertEqual({(f["s"], f["i"]) for f in imgs}, {(0, 0), (1, 0), (1, 1)})
 
     async def test_one_token_ties_the_frames_together(self):
@@ -158,26 +156,21 @@ class Live(NodeCase):
         await settle(lambda: entry.u8(0, 0) is not None)
         np.testing.assert_array_equal(entry.u8(0, 0), helpers.stock_u8(x[0]))
 
-    async def test_a_failing_preview_does_not_fail_the_node_or_strand_the_client(self):
-        real = self.pkg.pipeline.make_preview
-
+    async def test_a_failing_thumbnail_does_not_fail_the_node_or_strand_the_client(self):
         def boom(*a, **k):
             raise RuntimeError("encoder exploded")
-        self.pkg.pipeline.make_preview = boom
-        try:
-            with self.assertLogs(self.pkg.nodes.log, level="WARNING"):
-                ui = (await self.run_node(helpers.split_image(), feed="off"))["ui"]
-                frames = await self.until_end()    # `end` still arrives, so the UI never waits forever
-        finally:
-            self.pkg.pipeline.make_preview = real
-        self.assertEqual([k for k, f in frames if k == "img"], ["img"])    # only the thumb
+        self.pkg.pipeline.make_thumb = boom
+        with self.assertLogs(self.pkg.nodes.log, level="WARNING"):
+            ui = (await self.run_node(helpers.split_image(), feed="off"))["ui"]
+            frames = await self.until_end()    # `end` still arrives, so the UI never waits forever
+        self.assertEqual([k for k, f in frames if k == "img"], [])
         self.assertIn("fast_preview", ui)
 
     async def test_a_failing_encode_is_an_error_when_the_feed_needs_it(self):
         def boom(*a, **k):
             raise RuntimeError("nope")
         self.pkg.pipeline.make_preview = boom
-        with self.assertLogs(self.pkg.nodes.log, level="WARNING"), self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError):
             await self.run_node(helpers.split_image(), feed="preview")
 
     async def test_rerunning_a_node_supersedes_what_was_still_queued(self):

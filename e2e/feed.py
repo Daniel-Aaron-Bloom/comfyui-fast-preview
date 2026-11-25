@@ -16,7 +16,7 @@ with sync_playwright() as p:
       const api = window.comfyAPI.api.api, id = String(window.app.graph.nodes.find(n => n.type === 'FastPreview').id);
       window.__ev = { executed: null, painted: null };
       api.addEventListener('executed', (e) => { if (String(e.detail.node) === id && window.__ev.executed === null) window.__ev.executed = performance.now(); });
-      const poll = () => { if (window.__ev.painted === null && /thumbnail|preview/.test(document.querySelector('.fp-info')?.textContent || '')) window.__ev.painted = performance.now(); if (window.__ev.painted === null) requestAnimationFrame(poll); };
+      const poll = () => { if (window.__ev.painted === null && /thumbnail|exact/.test(document.querySelector('.fp-info')?.textContent || '')) window.__ev.painted = performance.now(); if (window.__ev.painted === null) requestAnimationFrame(poll); };
       requestAnimationFrame(poll);
     }""")
     s.run_and_wait()

@@ -57,7 +57,7 @@ class Socket(RouteCase):
         got = await self.collect(ws)
         self.assertEqual(got[0][1]["op"], "begin")
         self.assertEqual(got[-1][1]["op"], "end")
-        self.assertEqual(sum(k == "img" for k, _ in got), 4)
+        self.assertEqual(sum(k == "img" for k, _ in got), 2)    # a thumbnail per side: the exact pixels come over HTTP
         self.assertTrue(all(f["t"] == token for _, f in got))
         await ws.close()
 
@@ -89,7 +89,7 @@ class Socket(RouteCase):
         await ws.receive()    # hello
         await ws.send_str(json.dumps({"op": "want", "t": token}))
         got = await self.collect(ws)
-        self.assertEqual([f.get("op") or f["l"] for _, f in got], ["begin", 1, "end"])    # the preview, not the thumb
+        self.assertEqual([f.get("op") or f["l"] for _, f in got], ["begin", 0, "end"])    # the thumbnail
         self.assertTrue(got[0][1]["replay"])
         await ws.close()
 
@@ -126,18 +126,15 @@ class Images(RouteCase):
         r = await self.client.get("/fastpreview/img", params={"t": token, "s": "r", "i": 2})
         np.testing.assert_array_equal(np.asarray(Image.open(io.BytesIO(await r.read()))), helpers.stock_u8(b[2]))
 
-    async def test_preview_and_thumb_over_http(self):
-        _, token = await self.run_node(helpers.split_image(2000, 1000), max_edge=500)
-        end = asyncio.get_running_loop().time() + 3
-        while True:
-            r = await self.client.get("/fastpreview/img", params={"t": token, "lod": 1})
-            if r.status == 200 or asyncio.get_running_loop().time() > end:
-                break
-            await asyncio.sleep(0.02)
-        self.assertEqual((r.status, r.content_type), (200, "image/jpeg"))
-        self.assertEqual(Image.open(io.BytesIO(await r.read())).size, (500, 250))
+    async def test_thumb_and_full_over_http(self):
+        _, token = await self.run_node(helpers.split_image(2000, 1000))
         r = await self.client.get("/fastpreview/img", params={"t": token, "lod": 0})
-        self.assertEqual(Image.open(io.BytesIO(await r.read())).size, (64, 32))
+        self.assertEqual((r.status, r.content_type), (200, "image/jpeg"))
+        self.assertEqual(Image.open(io.BytesIO(await r.read())).size, (128, 64))
+        r = await self.client.get("/fastpreview/img", params={"t": token, "lod": 1})
+        self.assertEqual((r.status, r.content_type), (200, "image/png"))
+        self.assertEqual(Image.open(io.BytesIO(await r.read())).size, (2000, 1000))
+        self.assertEqual((await self.client.get("/fastpreview/img", params={"t": token, "lod": 2})).status, 400)
 
     async def test_download_is_named_and_smaller(self):
         _, token = await self.run_node(helpers.split_image(128, 128))    # flat colour: compresses well

@@ -47,16 +47,16 @@ with sync_playwright() as p:
     s = Session(p); s.page.add_init_script(SPY); s.open()
     s.page.evaluate(FIXED, {"batch": 1, "bsize": 1024}); time.sleep(0.5)
     s.run_and_wait()
-    check("first run paints a preview", "preview" in info(s), info(s))
+    check("first run ends on the exact pixels", "exact" in info(s), info(s))
     s.page.reload(wait_until="domcontentloaded")
     s.page.wait_for_function("() => window.app && window.app.graph && window.LiteGraph", timeout=60000); time.sleep(1.5)
     s.page.keyboard.press("Escape")
     s.page.evaluate(FIXED, {"batch": 1, "bsize": 1024}); time.sleep(0.5)
     t0 = time.time()
     s.page.evaluate("() => window.app.queuePrompt(0)")
-    s.page.wait_for_function("() => /preview/.test(document.querySelector('.fp-info')?.textContent || '')", timeout=30000)
+    s.page.wait_for_function(WAIT_JS["exact"], timeout=30000)
     cached_log = [l for l in s.page.evaluate("() => window.__sent") if '"want"' in l]
-    check("after a reload the cached prompt shows its preview (by asking the server to replay it)", bool(cached_log), cached_log)
+    check("after a reload the cached prompt shows its exact pixels (by asking the server to replay it)", bool(cached_log), cached_log)
     check("... without going to the feed files", not [u for t, u in s.reqs if t >= t0 and "/view?" in u and "fastpreview_" in u])
     s.close()
 
@@ -64,17 +64,18 @@ with sync_playwright() as p:
     s = Session(p); s.page.add_init_script(BLOCK_WS); s.open()
     s.page.evaluate(FIXED, {"batch": 1, "bsize": 1024}); time.sleep(0.5)
     t0 = time.time(); s.run_and_wait()
-    http = [u for t, u in s.reqs if t >= t0 and "/fastpreview/img" in u and "lod=1" in u]
-    check("with no socket, the preview arrives over HTTP", "Left 1024×1024 preview" in info(s) and len(http) == 2, (info(s), http))
+    http = [u for t, u in s.reqs if t >= t0 and "/fastpreview/img" in u]
+    full = [u for u in http if "lod=1" in u]
+    check("with no socket, the exact pixels arrive over HTTP", "Left 1024×1024 exact" in info(s) and len(full) == 2, (info(s), http))
     s.close()
 
     # ---------- 3. everything down: fall back to the files written for the feed ----------
     s = Session(p); s.page.add_init_script(BLOCK_WS)
     s.page.route("**/fastpreview/img**", lambda r: r.abort()); s.open()
     s.page.evaluate(FIXED, {"batch": 1, "bsize": 1024}); time.sleep(0.5)
-    t0 = time.time(); s.run_and_wait()
+    t0 = time.time(); s.run_and_wait(until="any")    # the exact pixels cannot arrive: the feed's file stands in
     feed = [u for t, u in s.reqs if t >= t0 and "/view?" in u and "fastpreview_" in u]
-    check("with the socket and endpoint down, the feed files are used", "preview" in info(s) and len(feed) >= 2, (info(s), feed))
+    check("with the socket and endpoint down, the feed files are used", "thumbnail" in info(s) and len(feed) >= 2, (info(s), feed))
     s.close()
 
     # ---------- 4. batch of 3 against a single, smaller B ----------
@@ -100,13 +101,13 @@ with sync_playwright() as p:
     s.page.screenshot(path=f"{S}/shot_vue_built.png")
     try:
         s.run_and_wait(timeout=30000)
-        check("vue mode: previews arrive", "preview" in info(s), info(s))
+        check("vue mode: the exact pixels arrive", "exact" in info(s), info(s))
         owners = s.page.evaluate("() => [...document.querySelectorAll('img')].filter(i => /\\/view\\?/.test(i.src)).map(i => i.closest('[data-node-id]')?.dataset.nodeId + ':' + (i.closest('[data-node-id]')?.innerText || '').split('\\n')[0])")
         print("INFO /view images in vue nodes (node id:title):", owners)
         check("vue mode: no stock output image inside the FastPreview node (id 4)", not [o for o in owners if o.startswith("4:")], owners)
         s.page.screenshot(path=f"{S}/shot_vue_run.png")
     except Exception as e:
-        check("vue mode: previews arrive", False, repr(e)[:200]); s.page.screenshot(path=f"{S}/shot_vue_fail.png")
+        check("vue mode: the exact pixels arrive", False, repr(e)[:200]); s.page.screenshot(path=f"{S}/shot_vue_fail.png")
     s.close()
 
     # ---------- 6. zoom buttons (the only zoom that works in every mode) ----------
@@ -117,7 +118,7 @@ with sync_playwright() as p:
         t0 = time.time()
         s.page.locator(".fp-btn", has_text="1:1").first.click(force=True)
         s.page.wait_for_function("() => /Left 1024×1024 exact/.test(document.querySelector('.fp-info')?.textContent || '')", timeout=15000)
-        check(f"{'vue' if vue else 'legacy'}: 1:1 at actual pixels fetches the exact image", True)
+        check(f"{'vue' if vue else 'legacy'}: 1:1 at actual pixels shows the exact image", True)
         before = s.shot("e2e_z1")
         s.page.locator(".fp-btn", has_text="+").first.click(force=True); time.sleep(0.4)
         check(f"{'vue' if vue else 'legacy'}: + zooms in", np.abs(s.shot("e2e_z2") - before).mean() > 3)
