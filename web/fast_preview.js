@@ -127,7 +127,8 @@ function attach(node) {
     const state = { node, viewer: null, recovering: null };
     node.onDrawBackground = function () {
         // The stock handler does nothing else for a node like this one: it only loads and lays out output images.
-        state.viewer.syncSize();
+        // (The classic renderer calls this on every draw; the Vue-nodes renderer never does: see onDrawForeground below.)
+        state.viewer.nudge();
     };
 
     const container = document.createElement("div");
@@ -275,6 +276,16 @@ app.registerExtension({
             },
         });
         socket.start();
+
+        // Zooming the graph scales every viewer with a CSS transform, which nothing announces to them.
+        // The graph canvas redraws on every zoom and pan, in either renderer: that is the cue to look again.
+        if (await until(() => app.canvas, 5000)) {
+            const previous = app.canvas.onDrawForeground;
+            app.canvas.onDrawForeground = function () {
+                for (const { viewer } of attached) viewer.nudge();
+                return previous?.apply(this, arguments);
+            };
+        }
     },
 
     nodeCreated(node) {

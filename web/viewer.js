@@ -13,6 +13,7 @@ const LABELS = SIDE_NAMES.map((n) => n[0].toUpperCase() + n.slice(1));    // Lef
 const MODES = ["slide", "flip", "diff"];
 const GAINS = [1, 4, 16];
 const MAX_ZOOM = 64;
+const SETTLE_FRAMES = 15;    // after the size last changed, keep looking this long (~250 ms) before going back to sleep
 
 const CSS = `
 .fp-root{position:relative;width:100%;height:100%;min-height:200px;overflow:hidden;background:#161616;border-radius:4px;
@@ -79,6 +80,9 @@ export class Viewer {
         this.showStats = false;
         this.drag = null;
         this.raf = 0;
+        this.quiet = 0;          // frames since the on-screen size last changed (see nudge)
+        this.watching = false;
+        this.dead = false;
         this.size = { w: 0, h: 0, dpr: 1 };
 
         const root = (this.root = el("div", "fp-root"));
@@ -139,7 +143,10 @@ export class Viewer {
         canvas.addEventListener("dblclick", (e) => (this.zoom > 1 ? this.resetView() : this.zoomTo(1, this.toDevice(e))));
         canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
 
-        this.resizer = new ResizeObserver(() => this.syncSize());
+        this.resizer = new ResizeObserver(() => {
+            this.syncSize();
+            this.nudge();
+        });
         this.resizer.observe(root);
         this.syncUi();
     }
@@ -169,6 +176,7 @@ export class Viewer {
     }
 
     destroy() {
+        this.dead = true;
         this.release();
         cancelAnimationFrame(this.raf);
         this.resizer.disconnect();
@@ -238,19 +246,44 @@ export class Viewer {
 
     // ---- layout ----------------------------------------------------------
 
-    /** Match the backing store to what is actually on screen (the graph's own
-     *  zoom scales this element with a CSS transform, so measure, don't assume). */
+    /** Match the backing store to what is actually on screen, so the image is drawn at one canvas
+     *  pixel per device pixel and the browser never has to stretch it. Returns whether it changed.
+     *
+     *  The graph's own zoom scales this element with a CSS transform, so measure, don't assume.
+     *  Nothing reports a transform changing (a ResizeObserver only hears about layout), hence nudge(). */
     syncSize() {
         const rect = this.root.getBoundingClientRect();
         const dpr = window.devicePixelRatio || 1;
         const w = Math.max(1, Math.round(rect.width * dpr));
         const h = Math.max(1, Math.round(rect.height * dpr));
         const s = this.size;
-        if (s.w === w && s.h === h && s.dpr === dpr) return;
+        if (s.w === w && s.h === h && s.dpr === dpr) return false;
         this.size = { w, h, dpr };
-        this.canvas.width = w;
+        this.canvas.width = w;    // this clears the canvas: draw now, not next frame, or one blank frame shows
         this.canvas.height = h;
-        this.requestDraw();
+        cancelAnimationFrame(this.raf);
+        this.raf = 0;
+        this.paint();
+        return true;
+    }
+
+    /** Something may have moved or zoomed this element (a redraw of the graph, a resize): look at its size
+     *  on the next frames until it has stayed the same for a moment. The host applies a zoom to the element
+     *  after its own draw hooks have run, so the size cannot be read reliably from inside one; this reads it
+     *  once the new transform is in place, and costs nothing while nothing is happening. */
+    nudge() {
+        this.quiet = 0;
+        if (this.watching || this.dead) return;
+        this.watching = true;
+        const look = () => {
+            requestAnimationFrame(() => {
+                if (this.dead) return;
+                this.quiet = this.syncSize() ? 0 : this.quiet + 1;
+                if (this.quiet < SETTLE_FRAMES) look();
+                else this.watching = false;
+            });
+        };
+        look();
     }
 
     frame() {
@@ -357,12 +390,16 @@ export class Viewer {
         if (this.raf) return;
         this.raf = requestAnimationFrame(() => {
             this.raf = 0;
-            try {
-                this.draw();
-            } catch (err) {
-                console.warn("[FastPreview] draw failed:", err);
-            }
+            this.paint();
         });
+    }
+
+    paint() {
+        try {
+            this.draw();
+        } catch (err) {
+            console.warn("[FastPreview] draw failed:", err);
+        }
     }
 
     sideRect(frame, side) {
